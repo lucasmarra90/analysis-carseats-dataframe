@@ -1,0 +1,323 @@
+---
+title: "Análise preditiva do conjunto de dados 'Carseats'"
+author: "Lucas Marra"
+date: "06/07/2020"
+output: html_document
+---
+
+
+
+### **Bibliotecas e pacotes utilizados**
+
+``` {r message=FALSE, warning=FALSE, paged.print=FALSE, cache=TRUE}
+library(ISLR)
+library(tidyverse)
+library(tidymodels)
+library(broom)
+library(doParallel)
+library(vip)
+library(ranger)
+library(dplyr)
+library(skimr)
+library(naniar)
+library(leaps)
+library(doParallel)
+library(kknn)
+```
+
+### **Base de estudo**
+
+A base a ser trabalhada será a *Carseats* (regressão), sendo "Advertising" a variável resposta.
+
+``` {r cache = TRUE}
+head(Carseats)
+```
+
+### **Exploração dos dados**
+
+Visualização dos tipos de variáveis do conjunto de dados.
+
+``` {r cache = TRUE}
+glimpse(Carseats)
+```
+
+Plot das variáveis
+```{r fig.dim = c(9, 12), cache=TRUE} 
+plot(Carseats)
+```
+
+Overview sumarizado do conjunto de dados
+```{r cache = TRUE} 
+skim(Carseats)
+```
+
+### **Separação entre treinamento e teste**
+
+Uso do pacote *RSample* para divisão do conjunto entre Training/Validation
+
+```{r cache = TRUE}
+split <- initial_split(Carseats, prop = 0.8)
+
+treinamento <- training(split)
+teste <- testing(split)
+
+```
+
+### **Processamento**
+
+Uso do pacote *Recipes* para criar e processar as matrizes que serão utilizadas para modelagem.
+A Variável ***receita*** recebe a informação dos dados para pré processamento. Variáveis numéricas são normalizadas (*step_normalize*) e variáveis nominais são transformadas em dummy (*step_dummy*)
+
+``` {r cache = TRUE}
+# Receita: Recebe a informação dos dados para pré-processamento
+receita <- recipe(Advertising ~ ., data = treinamento) %>%
+  # step_normalize: normaliza as variáveis para média 0 (exceto Advertising)
+  step_normalize(all_numeric(), -all_outcomes()) %>%
+  # step_dummy: converte variáveis nominais em dummy (Shelveloc, Urban, US)
+  step_dummy(all_nominal(), -all_outcomes()) 
+
+# Prep: Estima os parâmetros para aplicar o processamento
+receita_prep <- prep(receita)
+
+# Bake: Aplica a receita no conjunto de dados Carseats
+treinamento_proc <- bake(receita_prep, new_data = treinamento)
+teste_proc <- bake(receita_prep, new_data = teste)
+
+teste_proc
+
+```
+
+
+
+## **Modelos preditivos**
+
+
+Uso do pacote *Parsnip* para modelagem com 4 métodos distintos:
+  1)  Linear Model
+  2)  Random Forest
+  3)  KNN
+  4)  XGBoost
+
+
+
+### **Linear Regression**
+
+```{r cache = TRUE}
+lm_fit <- linear_reg() %>% #<<
+  set_engine("lm") %>% #<<
+  fit(Advertising ~ ., treinamento_proc)
+
+# Mutate para criação de coluna "Observado" e "Modelo" para comparativo modelos posteriores
+fitted_lm <- lm_fit %>% 
+  predict(new_data = teste_proc) %>% 
+  mutate(observado = teste_proc$Advertising, 
+         modelo = "lm")
+
+# Resultados do modelo com valor predito x observado
+head(fitted_lm)
+
+# Plot do gráfico com valor predito x observado
+fitted_lm %>% 
+  ggplot(aes(observado, .pred)) + 
+  geom_point(size = 3, col = "black") + 
+  labs(y = "Predito", x = "Observado")
+```
+
+
+### **Random Forest**
+
+```{r cache=TRUE}
+rf_fit <- rand_forest() %>% 
+  set_engine("ranger", importance = "permutation") %>% 
+  set_mode("regression") %>% 
+  fit(Advertising ~ ., treinamento_proc)
+
+# importancia variaveis: US_Yes, Sales e Population têm maior importância no modelo
+vip(rf_fit)
+
+fitted_rf <- rf_fit %>% 
+  predict(new_data = teste_proc) %>% 
+  mutate(observado = teste_proc$Advertising, 
+         modelo = "random forest")
+
+fitted_rf %>% 
+  ggplot(aes(observado, .pred)) + 
+  geom_point(size = 3, col = "black") + 
+  labs(y = "Predito", x = "Observado")
+```
+
+
+### **KNN**
+
+```{r cache = TRUE}
+knn_fit <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("regression") %>% 
+  fit(Advertising ~ ., treinamento_proc)
+
+
+fitted_knn <- knn_fit %>% 
+  predict(new_data = teste_proc) %>% 
+  mutate(observado = teste_proc$Advertising, 
+         modelo = "kknn")
+
+head(fitted_knn)
+
+fitted_knn %>% 
+  ggplot(aes(observado, .pred)) + 
+  geom_point(size = 3, col = "black") + 
+  labs(y = "Predito", x = "Observado")
+```
+
+
+### **XGBoost**
+
+```{r cache = TRUE}
+xgb_fit <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("regression") %>% 
+  fit(Advertising ~ ., treinamento_proc)
+
+fitted_xgb <- xgb_fit %>% 
+  predict(new_data = teste_proc) %>% 
+  mutate(observado = teste_proc$Advertising, 
+         modelo = "xgb")
+
+head(fitted_xgb)
+
+fitted_xgb %>% 
+  ggplot(aes(observado, .pred)) + 
+  geom_point(size = 3, col = "black") + 
+  labs(y = "Predito", x = "Observado")
+
+```
+
+## **Models comparation**
+
+Uso do pacote *Yardstick* para avaliação do desempenho preditivo de cada modelo
+
+MAE:  Mean Absolute Error (mesma escala dos dados);
+RSQ:  R squared (correlação entre as medidas, quanto mais proximo de 1 melhor);
+RMSE:  Root mean squared error (mesma escala dos dados)
+
+```{r cache=TRUE}
+fitted <- fitted_lm %>% 
+  bind_rows(fitted_rf) %>% 
+  bind_rows(fitted_knn) %>% 
+  bind_rows(fitted_xgb)
+
+# Função metrics
+fitted %>% 
+  group_by(modelo) %>% 
+  metrics(truth = observado, estimate = .pred)
+```
+
+#### LM foi superior a RF, KNN e XGBoost como desempenho preditivo
+
+
+## **Melhorar o desempenho preditivo da RF**
+
+Através do pacote "Tune" é possível ajustar os hiperparâmetros para melhorar o desempenho.
+
+```{r cache = TRUE}
+# Hiperparametros mtry e trees são otimizados pela função tune()
+rf2_fit <- rand_forest(mtry = tune(), trees = tune()) %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+# Validacao cruzada para ajuste de hiperparametros
+# cv_split cria 20 lotes para treinamento e teste
+cv_split <- vfold_cv(treinamento, v = 10)
+
+registerDoParallel()
+
+# Teste de 50 combinações de mtry e trees
+rf2_grid <- tune_grid(rf2_fit, 
+                     receita, 
+                     resamples = cv_split, 
+                     grid = 30, 
+                     metrics = metric_set(rmse, rsq, mae))
+
+# Função autoplot mostra a performance em cada uma das métricas (mae, rmse, rsq) pelos parâmetros
+autoplot(rf2_grid)
+
+#  É possível selecionar o melhor valor dos hiperparametros mtry e trees para otimizar o modelo
+best <- rf2_grid %>% 
+  select_best("rmse","mae","rsq")
+
+# Por último o modelo é finalizado alterando os hiperparametros para o valor otimo
+rf2_fit <- finalize_model(rf2_fit, parameters = best) %>% 
+  fit(Advertising ~ ., treinamento_proc)
+
+
+fitted_rf2 <- rf2_fit %>% 
+  predict(new_data = teste_proc) %>% 
+  mutate(observado = teste_proc$Advertising, 
+         modelo = "random forest - tune")
+
+fitted_rf2 %>% 
+  ggplot(aes(observado, .pred)) + 
+  geom_point(size = 3, col = "black") + 
+  labs(y = "Predito", x = "Observado")
+
+```
+
+## **Melhorar o desempenho preditivo da XGBoost**
+
+Assim como feito para RF podemos ajustar os hiperparâmetros para melhorar o desempenho
+
+``` {r cache=TRUE}
+# Hiperparametros são otimizados pela função tune()
+xgb2_fit <- boost_tree(mtry = tune(), trees = tune(), tree_depth = tune(), learn_rate = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+cv_split <- vfold_cv(treinamento, v = 10)
+
+registerDoParallel()
+
+xgb2_grid <- tune_grid(xgb2_fit, 
+                      receita, 
+                      resamples = cv_split, 
+                      grid = 30, 
+                      metrics = metric_set(rmse, rsq, mae))
+
+autoplot(xgb2_grid)
+
+
+best <- xgb2_grid %>% 
+  select_best("rmse","mae","rsq")
+
+xgb2_fit <- finalize_model(xgb2_fit, parameters = best) %>% 
+  fit(Advertising ~ ., treinamento_proc)
+
+fitted_xgb2 <- xgb2_fit %>% 
+  predict(new_data = teste_proc) %>% 
+  mutate(observado = teste_proc$Advertising, 
+         modelo = "xgb - tune")
+
+fitted_xgb2 %>% 
+  ggplot(aes(observado, .pred)) + 
+  geom_point(size = 3, col = "black") + 
+  labs(y = "Predito", x = "Observado")
+```
+
+## **Comparativo final entre modelos**
+
+```{r cache=TRUE}
+fitted <- fitted_lm %>% 
+  bind_rows(fitted_rf) %>% 
+  bind_rows(fitted_knn) %>% 
+  bind_rows(fitted_xgb) %>% 
+  bind_rows(fitted_rf2) %>% 
+  bind_rows(fitted_xgb2)
+
+
+fitted %>% 
+  group_by(modelo) %>% 
+  metrics(truth = observado, estimate = .pred) 
+```
+
+## **CONCLUSÃO**
+
+Mesmo com ajustes de hiperparâmetros para Random Forest e XGBoost, Modelo linear apresentou melhor desempenho para a base Carseats, consideranto as métricas *rmse*, *mae* e *rsq*
