@@ -14,3 +14,5 @@ In all models were used the tidymodels packages:
  - **Recipes**to create and process the as matrices used for modeling
  - **Parsnip** for modeling
  - **Yardstick** for evaluating the predictive performance of each model
+
+This activity was part of the the Advanced Program in Data Science and Decision at Insper.
